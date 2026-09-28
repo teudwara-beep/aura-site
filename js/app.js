@@ -293,6 +293,7 @@ function closeModal(){
   $$('#modalBody video').forEach(video => { video.onerror = null; video.onloadedmetadata = null; video.onloadeddata = null; video.pause(); video.removeAttribute('src'); video.load(); });
   if (uploadPreviewURL){ URL.revokeObjectURL(uploadPreviewURL); uploadPreviewURL = null; }
   if (categoryPreviewURL){ URL.revokeObjectURL(categoryPreviewURL); categoryPreviewURL = null; }
+  if (videoThumbnailPreviewURL){ URL.revokeObjectURL(videoThumbnailPreviewURL); videoThumbnailPreviewURL = null; }
   modalScrim.classList.remove('open');
   if ($('#ageGate').hidden) document.body.classList.remove('no-scroll');
   if (modalScrim._trap) document.removeEventListener('keydown', modalScrim._trap);
@@ -562,6 +563,7 @@ let thumbActive = 0;
 
 function captureVideoFrame(id, admin = false){
   const entry = getVideo(id);
+  if (entry?.thumbnail) return Promise.resolve(entry.thumbnail);
   if (entry?.bunny) return Promise.resolve(entry.bunnyThumbnail || null);
   return new Promise(resolve => {
     const video = document.createElement('video');
@@ -1170,7 +1172,7 @@ async function renderWatch(id){
           <span class="player-badge"><i></i>Now playing</span>
           <span class="player-title">${esc(v.t)} · ${esc(SITE_SETTINGS.siteName || 'AURA')}</span>
         </div>
-        <video id="video" src="${source}" preload="metadata" playsinline></video>
+        <video id="video" src="${source}"${v.thumbnail ? ` poster="${esc(v.thumbnail)}"` : ''} preload="metadata" playsinline></video>
         <div class="seek-feedback" id="seekFeedback" role="status" aria-live="polite" aria-atomic="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7"/><path d="M4 4v4.7h4.7"/><path d="M12 8v4l2.8 1.7"/></svg><span id="seekFeedbackText">10 seconds</span></div>
         <div class="spinner"></div>
         <div class="player-error" id="playerError" role="alert" hidden><p>Video unavailable. Check your connection or try another browser.</p><button class="mbtn" id="retryVideo">Try again</button></div>
@@ -2007,9 +2009,11 @@ async function renderAdminStorage(panel){
       ${data.missingCategoryImages.length ? `<ul>${data.missingCategoryImages.map(item => `<li>#${item.id} · ${esc(item.name)}</li>`).join('')}</ul>` : ''}
       <p>${data.missingGalleryImages?.length ? `${data.missingGalleryImages.length} collection photo(s) are missing. Review these collections:` : 'All referenced collection photos are present.'}</p>
       ${data.missingGalleryImages?.length ? `<ul>${data.missingGalleryImages.map(item => `<li>Photo #${item.id} · ${esc(item.title)}</li>`).join('')}</ul>` : ''}
+      <p>${data.missingVideoThumbnails?.length ? `${data.missingVideoThumbnails.length} custom video thumbnail(s) are missing:` : 'All referenced custom video thumbnails are present.'}</p>
+      ${data.missingVideoThumbnails?.length ? `<ul>${data.missingVideoThumbnails.map(item => `<li>#${item.id} · ${esc(item.title)}</li>`).join('')}</ul>` : ''}
       <p>${data.availableBytes === null ? 'Free disk space unavailable.' : `${fmtBytes(data.availableBytes)} available on the video disk.`}</p>
-      <p>${data.unreferencedFiles} unreferenced video file(s) · ${data.unreferencedCategoryImages} unreferenced category image(s) · ${data.unreferencedGalleryImages || 0} unreferenced collection photo(s) · ${data.activeUploads + data.activeCategoryOperations + (data.activeGalleryOperations || 0)} active operation(s). Check again after uploads finish before reviewing unreferenced files.</p>
-      <h4>Backup &amp; recovery</h4><p>Catalog export contains metadata only. Run <code>npm run backup</code> to save the database, site images and local videos. Bunny video bytes stay with Bunny and need their own recovery plan. Keep a copy of the backup on a separate disk.</p>`;
+      <p>${data.unreferencedFiles} unreferenced video file(s) · ${data.unreferencedCategoryImages} unreferenced category image(s) · ${data.unreferencedGalleryImages || 0} unreferenced collection photo(s) · ${data.unreferencedVideoThumbnails || 0} unreferenced video thumbnail(s) · ${data.activeUploads + data.activeCategoryOperations + (data.activeGalleryOperations || 0)} active operation(s). Check again after uploads finish before reviewing unreferenced files.</p>
+      <h4>Backup &amp; recovery</h4><p>Catalog export contains metadata only. Run <code>npm run backup</code> to save the database, site images, custom video thumbnails and local videos. Bunny video bytes stay with Bunny and need their own recovery plan. Keep a copy of the backup on a separate disk.</p>`;
   } catch(error){ if (result.isConnected) result.textContent = error.message || 'Storage check failed. Try again.'; }
 }
 
@@ -2031,6 +2035,7 @@ function renderAdminVideos(panel){
       <td><div class="row-actions"><button class="row-act" data-act="preview" title="Preview video" aria-label="Preview video" ${video.hasFile?'':'disabled'}>▶</button>
       <button class="row-act" data-act="replace" title="${video.hasFile?'Replace file':'Add file'}" aria-label="${video.hasFile?'Replace file':'Add file'}">↥</button>
       <button class="row-act" data-act="edit" title="Edit details" aria-label="Edit details">✎</button>
+      <button class="row-act" data-act="thumbnail" title="Change thumbnail" aria-label="Change thumbnail" ${video.hasFile?'':'disabled'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></button>
       ${video.bunny && video.status!=='live' ? '<button class="row-act" data-act="encoding" title="Check Bunny encoding" aria-label="Check Bunny encoding">◷</button>' : ''}
       <button class="row-act" data-act="publish" title="${video.status==='live'?'Unpublish':'Publish'}">${video.status==='live'?'↓':'↑'}</button>
       <button class="row-act danger" data-act="delete" title="Delete">×</button></div></td>
@@ -2051,6 +2056,7 @@ function renderAdminVideos(panel){
     if (action === 'preview') return openAdminPreview(video);
     if (action === 'replace') return openUploadModal(video);
     if (action === 'edit') return openVideoEditModal(id);
+    if (action === 'thumbnail') return openVideoThumbnailModal(video);
     if (action === 'encoding'){
       try{const state=await api(`/api/admin/videos/${id}/bunny-upload/status`);toast(state.ready?'Bunny encoding is complete. You can publish this video.':state.status===5?'Bunny encoding failed. Replace the file or review it in Bunny.':'Bunny is still encoding this video.',state.ready?'success':'warn');}
       catch(error){toast(error.message,'error');}
@@ -2095,6 +2101,70 @@ function openVideoEditModal(id){
   };
 }
 
+let videoThumbnailPreviewURL = null;
+function thumbnailPreviewMarkup(video){
+  if (video.thumbnail) return `<img src="${esc(video.thumbnail)}" alt="Current custom thumbnail">`;
+  if (video.bunnyThumbnail) return `<img src="${esc(video.bunnyThumbnail)}" alt="Current Bunny thumbnail">`;
+  return '<span>Automatic video preview</span>';
+}
+function openVideoThumbnailModal(video){
+  if (!video?.hasFile) return toast('Upload a video file first.','warn');
+  let selectedImage = null, selection = 0, busy = false;
+  openModal({title:`Thumbnail · ${video.t}`,body:`
+    <div class="field"><label>Current thumbnail</label><div class="video-thumbnail-preview" id="vtPreview">${thumbnailPreviewMarkup(video)}</div>
+      <label for="vtImage">Choose a custom image</label><input id="vtImage" type="file" accept="image/jpeg,image/png,image/webp">
+      <p class="hint">JPG, PNG or WebP · up to 20 MB. A 16:9 image looks best; large images are resized and converted before upload.</p>
+      <p class="hint" id="vtStatus" role="status" aria-live="polite">${video.thumbnail?'A custom thumbnail is active.':'No custom thumbnail is set; the automatic preview is used.'}</p>
+    </div>`,
+    footer:`${video.thumbnail?'<button class="mbtn" id="vtReset" type="button">Use automatic</button>':''}<button class="mbtn" data-close-modal type="button">Cancel</button><button class="mbtn primary" id="vtSave" type="button" disabled>Save thumbnail</button>`});
+  const input = $('#vtImage'), preview = $('#vtPreview'), status = $('#vtStatus'), save = $('#vtSave'), reset = $('#vtReset');
+  const restorePreview = () => { preview.innerHTML = thumbnailPreviewMarkup(video); };
+  input.onchange = () => {
+    const current = ++selection, file = input.files?.[0];
+    if (videoThumbnailPreviewURL){ URL.revokeObjectURL(videoThumbnailPreviewURL); videoThumbnailPreviewURL = null; }
+    selectedImage = null; save.disabled = true;
+    if (!file){ restorePreview(); status.textContent = video.thumbnail?'A custom thumbnail is active.':'No custom thumbnail is set; the automatic preview is used.'; return; }
+    const mime = categoryImageMime(file);
+    if (!mime || !file.size || file.size > MAX_CATEGORY_SOURCE_BYTES){ restorePreview(); status.textContent = 'Choose a JPG, PNG or WebP image up to 20 MB.'; return; }
+    status.textContent = 'Checking and resizing image…';
+    videoThumbnailPreviewURL = URL.createObjectURL(file);
+    const image = document.createElement('img'); image.alt = 'Selected thumbnail preview';
+    image.onload = async () => {
+      try {
+        const prepared = await prepareVideoThumbnail(image);
+        if (current !== selection || !preview.isConnected) return;
+        selectedImage = prepared; status.textContent = `Ready to upload · ${fmtBytes(prepared.size)} JPEG`;
+        save.disabled = false;
+      } catch(error){
+        if (current !== selection || !preview.isConnected) return;
+        status.textContent = error.message || 'Could not prepare this image.';
+      }
+    };
+    image.onerror = () => { if (current === selection && preview.isConnected){ restorePreview(); status.textContent = 'This image could not be opened. Choose a JPG, PNG or WebP image.'; } };
+    preview.replaceChildren(image); image.src = videoThumbnailPreviewURL;
+  };
+  save.onclick = async () => {
+    if (!selectedImage || busy) return;
+    busy = true; save.disabled = true; input.disabled = true; if (reset) reset.disabled = true;
+    status.textContent = video.bunny ? 'Saving thumbnail to AURA and Bunny Stream…' : 'Saving thumbnail…';
+    try {
+      await api(`/api/admin/videos/${video.id}/thumbnail`,{method:'PUT',headers:{'Content-Type':selectedImage.type},body:selectedImage});
+    } catch(error){ busy = false; input.disabled = false; if (reset) reset.disabled = false; save.disabled = false; status.textContent = error.message || 'Could not save the thumbnail.'; return; }
+    invalidateThumb(video.id); closeModal(); toast('Video thumbnail saved.','success');
+    await loadCatalog().catch(() => {}); await renderAdminView();
+  };
+  if (reset) reset.onclick = async () => {
+    if (busy) return;
+    busy = true; reset.disabled = true; save.disabled = true; input.disabled = true;
+    status.textContent = video.bunny ? 'Restoring Bunny’s automatic thumbnail…' : 'Restoring the automatic video preview…';
+    try {
+      await api(`/api/admin/videos/${video.id}/thumbnail`,{method:'DELETE'});
+    } catch(error){ busy = false; reset.disabled = false; input.disabled = false; save.disabled = !selectedImage; status.textContent = error.message || 'Could not restore the automatic thumbnail.'; return; }
+    invalidateThumb(video.id); closeModal(); toast('Automatic thumbnail restored.','success');
+    await loadCatalog().catch(() => {}); await renderAdminView();
+  };
+}
+
 let categoryPreviewURL = null;
 const MAX_CATEGORY_IMAGE_BYTES = 3 * 1024 * 1024;
 const MAX_CATEGORY_SOURCE_BYTES = 20 * 1024 * 1024;
@@ -2125,6 +2195,25 @@ async function optimizeCategoryImage(image){
       context.fillRect(0, 0, canvas.width, canvas.height);
       const jpeg = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .82));
       if (jpeg?.type === 'image/jpeg' && jpeg.size && jpeg.size <= MAX_CATEGORY_IMAGE_BYTES) return jpeg;
+    }
+  }
+  throw new Error('Could not reduce this image below 3 MB. Choose a smaller image.');
+}
+async function prepareVideoThumbnail(image){
+  const maxSide = Math.max(image.naturalWidth,image.naturalHeight);
+  if (!maxSide || image.naturalWidth * image.naturalHeight > 50_000_000) throw new Error('Choose an image smaller than 50 megapixels.');
+  const canvas = document.createElement('canvas');
+  for (const side of [1600,1200,900,640]) {
+    const scale = Math.min(1,side/maxSide);
+    canvas.width = Math.max(1,Math.round(image.naturalWidth*scale));
+    canvas.height = Math.max(1,Math.round(image.naturalHeight*scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('This browser cannot resize the image.');
+    context.fillStyle = '#08080a'; context.fillRect(0,0,canvas.width,canvas.height);
+    context.drawImage(image,0,0,canvas.width,canvas.height);
+    for (const quality of [.86,.78,.68]) {
+      const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/jpeg',quality));
+      if (blob?.type === 'image/jpeg' && blob.size && blob.size <= MAX_CATEGORY_IMAGE_BYTES) return blob;
     }
   }
   throw new Error('Could not reduce this image below 3 MB. Choose a smaller image.');

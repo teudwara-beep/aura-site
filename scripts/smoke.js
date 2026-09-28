@@ -38,7 +38,7 @@ async function request(url, { host = adminHost, method = 'GET', json, bytes, mim
         resolve({ status: res.statusCode, headers: res.headers, data, raw });
       });
     });
-    req.on('error', reject);
+    req.on('error', error => reject(new Error(`${method} ${url}: ${error.message}`,{cause:error})));
     req.end(body);
   });
 }
@@ -97,7 +97,9 @@ async function main() {
     }
     if (!ready) throw new Error(`Server did not start: ${logs.join('')}`);
     const check = async (expected, url, options) => {
-      const result = await request(url, options);
+      let result;
+      try { result = await request(url, options); }
+      catch(error){ if (logs.length) console.error(`Server stderr before request failure:\n${logs.join('')}`); throw error; }
       assert.equal(result.status, expected, `${options?.method || 'GET'} ${url}: ${result.raw.toString().slice(0, 200)}`);
       return result;
     };
@@ -208,6 +210,17 @@ async function main() {
     assert.deepEqual((await fs.readdir(path.join(tmp, 'videos'))), []);
     await check(200, `/api/admin/videos/${id}/file`, { ...auth, method: 'PUT', bytes: mp4, mime: 'video/mp4' });
     assert.equal((await check(200, '/api/admin/overview', auth)).data.stats.storageBytes, mp4.length);
+    await check(401, `/api/admin/videos/${id}/thumbnail`, {method:'PUT',mime:'image/png',bytes:categoryImage});
+    await check(401, `/api/admin/videos/${id}/thumbnail`, {method:'GET'});
+    await check(415, `/api/admin/videos/${id}/thumbnail`, {...auth,method:'PUT',mime:'image/svg+xml',bytes:categoryImage});
+    await check(415, `/api/admin/videos/${id}/thumbnail`, {...auth,method:'PUT',mime:'image/png',bytes:categoryImage.subarray(0,24)});
+    await check(413, `/api/admin/videos/${id}/thumbnail`, {...auth,method:'PUT',mime:'image/png',bytes:Buffer.alloc(3*1024*1024+1)});
+    const customThumbnail = (await check(200, `/api/admin/videos/${id}/thumbnail`, {...auth,method:'PUT',mime:'image/png',bytes:imageWithMetadata})).data.item.thumbnail;
+    assert.match(customThumbnail,new RegExp(`/api/admin/videos/${id}/thumbnail\\?v=`));
+    const thumbnailName = new URL(customThumbnail,'http://localhost').searchParams.get('v');
+    assert.deepEqual((await check(200,customThumbnail,{...auth})).raw,categoryImage);
+    assert.equal((await check(200,customThumbnail,{...auth,method:'HEAD'})).headers['content-type'],'image/png');
+    await check(404,`/api/videos/${id}/thumbnail?v=${thumbnailName}`,{host:publicHost});
     // Hold a replacement mid-stream; conflicting changes must not remove its row/file.
     let uploadRequest;
     const uploading = new Promise((resolve, reject) => {
@@ -226,6 +239,7 @@ async function main() {
       assert.ok(inProgress, 'Partial upload started');
       await check(409, `/api/admin/videos/${id}`, { ...auth, method:'DELETE' });
       await check(409, `/api/admin/videos/${id}/publish`, { ...auth, method:'PATCH', json:{published:true} });
+      await check(409, `/api/admin/videos/${id}/thumbnail`, { ...auth, method:'PUT',mime:'image/png',bytes:categoryImage });
     } finally { uploadRequest.end(mp4.subarray(16)); }
     assert.equal(await uploading, 200);
     const storage = (await check(200, '/api/admin/storage-check', auth)).data;
@@ -236,6 +250,21 @@ async function main() {
     await check(404, `/api/videos/${id}/file`, { host: publicHost });
     await check(400, '/api/admin/settings', { ...auth, method: 'PATCH', json: { featuredVideoId: String(id) } });
     await check(200, `/api/admin/videos/${id}/publish`, { ...auth, method: 'PATCH', json: { published: true } });
+    const publicThumb = (await check(200, '/api/catalog?ids='+id, {host:publicHost})).data.videos[0].thumbnail;
+    assert.match(publicThumb,new RegExp(`/api/videos/${id}/thumbnail\\?v=`));
+    assert.deepEqual((await check(200,publicThumb,{host:publicHost})).raw,categoryImage);
+    assert.equal((await check(200,publicThumb,{host:publicHost,method:'HEAD'})).headers['cache-control'],'public, max-age=31536000, immutable');
+    const replacedThumbnail = (await check(200,`/api/admin/videos/${id}/thumbnail`,{...auth,method:'PUT',mime:'image/jpeg',bytes:jpegImage})).data.item.thumbnail;
+    const replacedThumbnailName = new URL(replacedThumbnail,'http://localhost').searchParams.get('v');
+    assert.notEqual(replacedThumbnail,customThumbnail);
+    await assert.rejects(() => fs.access(path.join(serverEnv.DATA_DIR,'video-thumbnails',thumbnailName)),/ENOENT/);
+    await check(404,customThumbnail,{...auth});
+    assert.deepEqual((await check(200,replacedThumbnail,{...auth})).raw,cleanJpeg);
+    assert.deepEqual((await check(200,`/api/videos/${id}/thumbnail?v=${replacedThumbnailName}`,{host:publicHost})).raw,cleanJpeg);
+    const resetThumbnail = (await check(200,`/api/admin/videos/${id}/thumbnail`,{...auth,method:'DELETE'})).data.item;
+    assert.equal(resetThumbnail.thumbnail,null);
+    await assert.rejects(() => fs.access(path.join(serverEnv.DATA_DIR,'video-thumbnails',replacedThumbnailName)),/ENOENT/);
+    await check(404,`/api/videos/${id}/thumbnail?v=${replacedThumbnailName}`,{host:publicHost});
     await check(400, '/api/admin/settings', { ...auth, method: 'PATCH', json: { contactEmail: 'not-an-email' } });
     await check(200, '/api/admin/settings', { ...auth, method: 'PATCH', json: { siteName: 'NOVA & Co', tagline: 'Curated <calm> videos', featuredVideoId: String(id), announcement: 'New release', contactEmail: 'contact@example.test' } });
     const catalog = await check(200, '/api/catalog?page=1', { host: publicHost });
@@ -312,6 +341,11 @@ async function main() {
       if (isWebm) assert.deepEqual((await check(206, `/api/admin/videos/${item.id}/file`, { ...auth, range: 'bytes=0-3' })).raw, Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
       await check(200, `/api/admin/videos/${item.id}/publish`, { ...auth, method: 'PATCH', json: { published: true } });
     }
+    const secondThumbnail = (await check(200,`/api/admin/videos/${secondId}/thumbnail`,{...auth,method:'PUT',mime:'image/jpeg',bytes:jpegImage})).data.item.thumbnail;
+    assert.ok(secondThumbnail);
+    const secondPublicThumbnail = (await check(200,`/api/catalog?ids=${secondId}`,{host:publicHost})).data.videos[0].thumbnail;
+    assert.match(secondPublicThumbnail,new RegExp(`/api/videos/${secondId}/thumbnail\\?v=`));
+    assert.deepEqual((await check(200,secondPublicThumbnail,{host:publicHost})).raw,cleanJpeg);
     assert.equal((await check(200, '/api/catalog?page=1', { host: publicHost })).data.videos.length, 24);
     const page2 = (await check(200, '/api/catalog?page=2', { host: publicHost })).data;
     assert.equal(page2.videos.length, 2); assert.equal(page2.pagination.hasMore, false);
@@ -424,10 +458,11 @@ async function main() {
     assert.deepEqual((await check(200, survivingPhoto.src, {host:publicHost})).raw, cleanJpeg);
     assert.equal((await check(200, `/api/galleries/${gallery.id}/images/${survivingPhoto.id}/view`, {host:publicHost,method:'POST',json:{},cookie:galleryCookie})).data.views, 1);
     assert.deepEqual((await check(200, '/api/admin/storage-check', auth)).data.missingGalleryImages, []);
+    assert.deepEqual((await check(200, '/api/admin/storage-check', auth)).data.missingVideoThumbnails, []);
     // Full recovery round-trip includes SQLite and media, and refuses destructive restore.
     const backupPath = path.join(tmp, 'backup'), restorePath = path.join(tmp, 'restored');
     const manifest = await backup({ dataDir:serverEnv.DATA_DIR, videoDir:serverEnv.VIDEO_DIR, destination:backupPath });
-    assert.equal(manifest.files.length, 28);
+    assert.equal(manifest.files.length, 29);
     await verify(backupPath);
     const restored = await restore({ source:backupPath, destination:restorePath });
     await assert.rejects(() => restore({ source:backupPath, destination:restorePath }), /EEXIST/);
@@ -444,10 +479,13 @@ async function main() {
     const storedVideo = restoredDb.prepare('SELECT file_path FROM videos LIMIT 1').get().file_path;
     const storedImage = restoredDb.prepare('SELECT image_path FROM categories WHERE id=?').get(imageCategory.id).image_path;
     const storedGalleryImage = restoredDb.prepare('SELECT file_path FROM gallery_images WHERE gallery_id=?').get(gallery.id).file_path;
+    const storedVideoThumbnail = restoredDb.prepare('SELECT thumbnail_path FROM videos WHERE id=?').get(secondId).thumbnail_path;
+    assert.equal(storedVideoThumbnail,new URL(secondThumbnail,'http://localhost').searchParams.get('v'));
     restoredDb.close();
     assert.deepEqual(await fs.readFile(path.join(restored.videoDir, storedVideo)), await fs.readFile(path.join(serverEnv.VIDEO_DIR, storedVideo)));
     assert.deepEqual(await fs.readFile(path.join(restored.dataDir, 'category-images', storedImage)), categoryImage);
     assert.deepEqual(await fs.readFile(path.join(restored.dataDir, 'gallery-images', storedGalleryImage)), cleanJpeg);
+    assert.deepEqual(await fs.readFile(path.join(restored.dataDir, 'video-thumbnails', storedVideoThumbnail)), cleanJpeg);
     await check(200, `/api/admin/video-collections/${videoCollection.id}/videos`, {...auth,method:'PUT',json:{videoIds:[]}});
     await check(404, videoCollectionURL, {host:publicHost});
     await check(404, `${videoCollectionURL}/view`, {host:publicHost,method:'POST',json:{},cookie:collectionCookie});
@@ -488,7 +526,7 @@ async function main() {
     await new Promise(resolve => processHandle.once('exit', resolve));
     // Simulate an existing installation created before the publication-date column.
     const legacyDb = new DatabaseSync(path.join(tmp, 'db', 'aura.sqlite'));
-    legacyDb.exec('DROP INDEX IF EXISTS videos_published_idx; ALTER TABLE videos DROP COLUMN published_at; ALTER TABLE videos DROP COLUMN tags; ALTER TABLE galleries DROP COLUMN views; ALTER TABLE gallery_images DROP COLUMN views');
+    legacyDb.exec('DROP INDEX IF EXISTS videos_published_idx; ALTER TABLE videos DROP COLUMN published_at; ALTER TABLE videos DROP COLUMN tags; ALTER TABLE videos DROP COLUMN thumbnail_path; ALTER TABLE galleries DROP COLUMN views; ALTER TABLE gallery_images DROP COLUMN views');
     legacyDb.close();
     startServer();
     let restarted = false;
@@ -498,6 +536,7 @@ async function main() {
     }
     assert.ok(restarted, `Server did not restart: ${logs.join('')}`);
     await check(200, '/api/admin/overview', auth);
+    assert.equal((await check(200,'/api/admin/storage-check',auth)).data.unreferencedVideoThumbnails,1);
     assert.equal((await check(200, '/api/admin/overview', auth)).data.stats.galleryViews, 0);
     assert.equal((await check(200, '/api/settings', { host:publicHost })).data.settings.siteName, 'NOVA & Co');
     assert.equal((await check(200, '/api/settings', { host:publicHost })).data.settings.adWatchMobileZone, '456789');

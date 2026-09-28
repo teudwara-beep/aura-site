@@ -38,6 +38,8 @@ if (BUNNY_ENABLED && (!/^\d+$/.test(BUNNY_LIBRARY_ID) || !BUNNY_STREAM_API_KEY |
 }
 const CATEGORY_IMAGE_DIR = path.join(DATA_DIR, 'category-images');
 const MAX_CATEGORY_IMAGE_BYTES = 3 * 1024 * 1024;
+const VIDEO_THUMBNAIL_DIR = path.join(DATA_DIR, 'video-thumbnails');
+const MAX_VIDEO_THUMBNAIL_BYTES = 3 * 1024 * 1024;
 const GALLERY_IMAGE_DIR = path.join(DATA_DIR, 'gallery-images');
 const MAX_GALLERY_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_GALLERY_IMAGES = 100;
@@ -68,6 +70,7 @@ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL) || ADMIN_PASSWORD.length < 1
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(VIDEO_DIR, { recursive: true });
 fs.mkdirSync(CATEGORY_IMAGE_DIR, { recursive: true });
+fs.mkdirSync(VIDEO_THUMBNAIL_DIR, { recursive: true });
 fs.mkdirSync(GALLERY_IMAGE_DIR, { recursive: true });
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -181,6 +184,7 @@ db.exec(`
 if (!db.prepare('PRAGMA table_info(videos)').all().some(column => column.name === 'published_at')) db.exec('ALTER TABLE videos ADD COLUMN published_at INTEGER');
 if (!db.prepare('PRAGMA table_info(videos)').all().some(column => column.name === 'tags')) db.exec("ALTER TABLE videos ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
 if (!db.prepare('PRAGMA table_info(categories)').all().some(column => column.name === 'image_path')) db.exec('ALTER TABLE categories ADD COLUMN image_path TEXT');
+if (!db.prepare('PRAGMA table_info(videos)').all().some(column => column.name === 'thumbnail_path')) db.exec('ALTER TABLE videos ADD COLUMN thumbnail_path TEXT');
 if (!db.prepare('PRAGMA table_info(galleries)').all().some(column => column.name === 'views')) db.exec('ALTER TABLE galleries ADD COLUMN views INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare('PRAGMA table_info(gallery_images)').all().some(column => column.name === 'views')) db.exec('ALTER TABLE gallery_images ADD COLUMN views INTEGER NOT NULL DEFAULT 0');
 db.exec("UPDATE videos SET published_at=updated_at WHERE status='live' AND published_at IS NULL; CREATE INDEX IF NOT EXISTS videos_published_idx ON videos(status,published_at DESC);");
@@ -318,6 +322,7 @@ const sql = {
   updateVideo: db.prepare('UPDATE videos SET title=?,description=?,category=?,duration=?,quality=?,tags=?,updated_at=? WHERE id=?'),
   publish: db.prepare("UPDATE videos SET status=?,updated_at=?,published_at=CASE WHEN ?='live' AND status!='live' THEN ? ELSE published_at END WHERE id=?"),
   setFile: db.prepare('UPDATE videos SET file_path=?,file_mime=?,file_size=?,duration=CASE WHEN ?>0 THEN ? ELSE duration END,updated_at=? WHERE id=?'),
+  setVideoThumbnail: db.prepare('UPDATE videos SET thumbnail_path=?,updated_at=? WHERE id=?'),
   deleteVideo: db.prepare('DELETE FROM videos WHERE id=?'),
   incrementViews: db.prepare('UPDATE videos SET views=views+1 WHERE id=?'),
   setting: db.prepare('SELECT value FROM site_settings WHERE key=?'),
@@ -451,7 +456,7 @@ function timeAgo(timestamp) {
   const days = Math.floor(minutes / 1440);
   return days === 1 ? '1 day ago' : `${days} days ago`;
 }
-function mapVideo(row) {
+function mapVideo(row, admin = false) {
   const isUploaded = Boolean(row.file_path);
   const bunnyGuid = bunnyVideoId(row.file_path);
   return {
@@ -460,6 +465,7 @@ function mapVideo(row) {
     description: row.description, tags: videoTags(row), uploaded: isUploaded, hasFile: isUploaded, bunny: Boolean(bunnyGuid),
     bunnyPreview: bunnyGuid && BUNNY_PULL_ZONE ? `https://${BUNNY_PULL_ZONE}/${bunnyGuid}/preview_hq.mp4` : null,
     bunnyThumbnail: bunnyGuid && BUNNY_PULL_ZONE ? `https://${BUNNY_PULL_ZONE}/${bunnyGuid}/thumbnail.jpg` : null,
+    thumbnail: videoThumbnailName(row.thumbnail_path) ? `${admin ? '/api/admin' : '/api'}/videos/${row.id}/thumbnail?v=${encodeURIComponent(row.thumbnail_path)}` : null,
     live: false, vr: false
   };
 }
@@ -482,6 +488,24 @@ async function bunnyAPI(method, suffix, body) {
     throw httpError(503, `Bunny Stream request failed (${response.status}). Try again.`);
   }
   return method === 'DELETE' || response.status === 204 ? null : response.json();
+}
+async function bunnySetThumbnail(guid, image = null) {
+  if (!BUNNY_ENABLED) throw httpError(503, 'Bunny Stream is not configured.');
+  const endpoint = new URL(`https://video.bunnycdn.com/library/${BUNNY_LIBRARY_ID}/videos/${guid}/thumbnail`);
+  if (!image) endpoint.searchParams.set('thumbnailUrl', 'thumbnail_1.jpg');
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method:'POST', headers:{AccessKey:BUNNY_STREAM_API_KEY,Accept:'application/json','Content-Type':'application/octet-stream'},
+      body:image || undefined, signal:AbortSignal.timeout(15000)
+    });
+  } catch { throw httpError(503, 'Bunny Stream is unreachable. Try again.'); }
+  if (!response.ok) {
+    if (response.status === 404) throw httpError(409, 'Video is missing from Bunny Stream. Replace its file.');
+    throw httpError(503, `Bunny thumbnail update failed (${response.status}). Try again.`);
+  }
+  const result = await response.json().catch(() => null);
+  if (result?.success === false) throw httpError(503, 'Bunny could not update the thumbnail. Try again.');
 }
 function bunnyEmbedUrl(guid) {
   if (!BUNNY_ENABLED) throw httpError(503, 'Configure Bunny Stream to play this video.');
@@ -520,6 +544,7 @@ function mapCategory(row) {
 }
 function categoryImageName(filename) { return /^[a-f0-9-]{36}\.(jpg|png|webp)$/.test(filename || '') ? filename : null; }
 function categoryImageMime(filename) { return filename.endsWith('.jpg') ? 'image/jpeg' : filename.endsWith('.png') ? 'image/png' : 'image/webp'; }
+function videoThumbnailName(filename) { return /^[a-f0-9-]{36}\.(jpg|png|webp)$/.test(filename || '') ? filename : null; }
 async function readImage(req, maxBytes, label) {
   const mime = String(req.headers['content-type'] || '').split(';')[0].toLowerCase();
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) throw httpError(415, 'Use a JPG, PNG or WebP image.');
@@ -541,6 +566,7 @@ async function readImage(req, maxBytes, label) {
   return { data: clean, ext: mime === 'image/jpeg' ? '.jpg' : mime === 'image/png' ? '.png' : '.webp' };
 }
 function readCategoryImage(req) { return readImage(req, MAX_CATEGORY_IMAGE_BYTES, 'Category images'); }
+function readVideoThumbnail(req) { return readImage(req, MAX_VIDEO_THUMBNAIL_BYTES, 'Video thumbnails'); }
 function safeGalleryDetails(body) {
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const description = typeof body.description === 'string' ? body.description.trim() : '';
@@ -562,7 +588,7 @@ function mapVideoCollection(row, admin = false, includeVideos = true) {
   const videos = admin ? all : available;
   return { id:row.id, title:row.title, description:row.description, status:admin ? row.status : undefined,
     views:row.views, count:videos.length, availableCount:admin ? available.length : undefined,
-    coverVideoId:available[0]?.id || null, videos:includeVideos ? videos.map(mapVideo) : undefined };
+    coverVideoId:available[0]?.id || null, videos:includeVideos ? videos.map(video => mapVideo(video,admin)) : undefined };
 }
 function recordViewerView(req, res, key, increment) {
   // The same viewer cookie is used for videos and collections, with separate keys.
@@ -583,6 +609,17 @@ async function streamGalleryImage(req, res, row) {
   try { stat = await fsp.stat(file); } catch { throw httpError(404, 'Image not found.'); }
   res.writeHead(200, { 'Content-Type':categoryImageMime(name), 'Content-Length':stat.size,
     'Cache-Control':'private, no-store' });
+  if (req.method === 'HEAD') return res.end();
+  return pipeline(fs.createReadStream(file), res);
+}
+async function streamVideoThumbnail(req, res, row, admin, url) {
+  const name = videoThumbnailName(row?.thumbnail_path);
+  if (!name || url.searchParams.get('v') !== name) throw httpError(404, 'Video thumbnail not found.');
+  const file = path.join(VIDEO_THUMBNAIL_DIR, name);
+  let stat;
+  try { stat = await fsp.stat(file); } catch { throw httpError(404, 'Video thumbnail not found.'); }
+  res.writeHead(200, { 'Content-Type':categoryImageMime(name), 'Content-Length':stat.size,
+    'Cache-Control':admin ? 'private, no-store' : 'public, max-age=31536000, immutable' });
   if (req.method === 'HEAD') return res.end();
   return pipeline(fs.createReadStream(file), res);
 }
@@ -774,7 +811,7 @@ const server = http.createServer(async (req, res) => {
     const { pathname } = url;
 
     if (ADMIN_HOST && pathname.startsWith('/api/admin/') && !isAdminHost(req)) throw httpError(404, 'Not found.');
-    const mutation = pathname.match(/^\/api\/admin\/videos\/(\d+)(?:\/file|\/publish)?$/);
+    const mutation = pathname.match(/^\/api\/admin\/videos\/(\d+)(?:\/file|\/publish|\/thumbnail)?$/);
     if (mutation && ['PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       requireAdmin(req);
       const id = videoId(mutation[1]);
@@ -878,6 +915,12 @@ const server = http.createServer(async (req, res) => {
         'Cache-Control': 'public, max-age=3600' });
       if (req.method === 'HEAD') return res.end();
       return pipeline(fs.createReadStream(path.join(CATEGORY_IMAGE_DIR, filename)), res);
+    }
+    const publicVideoThumbnail = pathname.match(/^\/api\/videos\/(\d+)\/thumbnail$/);
+    if (publicVideoThumbnail && ['GET','HEAD'].includes(req.method)) {
+      const row = sql.publicVideoById.get(videoId(publicVideoThumbnail[1]));
+      if (!row) throw httpError(404, 'Video thumbnail not found.');
+      return await streamVideoThumbnail(req,res,row,false,url);
     }
     if (pathname === '/api/galleries' && req.method === 'GET') {
       const pageText = url.searchParams.get('page') || '1';
@@ -1005,7 +1048,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/admin/overview' && req.method === 'GET') {
       requireAdmin(req);
-      const videos = sql.adminVideos.all().map(mapVideo);
+      const videos = sql.adminVideos.all().map(row => mapVideo(row,true));
       return sendJSON(res, 200, { videos, categories: sql.categories.all().map(mapCategory), settings: getSettings(), stats: { videos: videos.length, published: Number(sql.countPublished.get().count), drafts: Number(sql.countDrafts.get().count), views: Number(sql.countViews.get().count), galleryViews: Number(sql.countGalleryViews.get().count), photoViews:Number(sql.countPhotoViews.get().count), videoCollectionViews:Number(sql.countVideoCollectionViews.get().count), storageBytes: Number(sql.countStoredBytes.get().count), openReports: Number(sql.countOpenReports.get().count) } });
     }
     if (pathname === '/api/admin/video-collections' && req.method === 'GET') {
@@ -1212,10 +1255,16 @@ const server = http.createServer(async (req, res) => {
       const missingGalleryImages = galleryRows.filter(row => !galleryFiles.has(row.file_path)).map(row => ({id:row.id,title:row.title}));
       const galleryRefs = new Set(galleryRows.map(row => row.file_path));
       const unreferencedGalleryImages = [...galleryFiles].filter(name => categoryImageName(name) && !galleryRefs.has(name)).length;
+      const thumbnailFiles = new Set((await fsp.readdir(VIDEO_THUMBNAIL_DIR, { withFileTypes:true })).filter(entry => entry.isFile()).map(entry => entry.name));
+      const thumbnailRows = rows.filter(row => row.thumbnail_path);
+      const missingVideoThumbnails = thumbnailRows.filter(row => !videoThumbnailName(row.thumbnail_path) || !thumbnailFiles.has(row.thumbnail_path)).map(row => ({id:row.id,title:row.title}));
+      const thumbnailRefs = new Set(thumbnailRows.map(row => videoThumbnailName(row.thumbnail_path)).filter(Boolean));
+      const unreferencedVideoThumbnails = [...thumbnailFiles].filter(name => videoThumbnailName(name) && !thumbnailRefs.has(name)).length;
       const disk = await fsp.statfs(VIDEO_DIR).catch(() => null);
       return sendJSON(res, 200, { missing, unreferencedFiles, bunnyVideos, pendingBunnyUploads, activeUploads: videoMutations.size,
         missingCategoryImages, unreferencedCategoryImages, activeCategoryOperations: categoryMutations.size,
         missingGalleryImages, unreferencedGalleryImages, activeGalleryOperations: galleryMutations.size,
+        missingVideoThumbnails, unreferencedVideoThumbnails,
         availableBytes: disk ? Number(disk.bavail) * Number(disk.bsize) : null,
         checkedAt: new Date().toISOString() });
     }
@@ -1295,6 +1344,49 @@ const server = http.createServer(async (req, res) => {
         if (error.code !== 'ENOENT') console.error('Could not remove category image:', error);
       });
       return sendJSON(res, 200, { category:mapCategory(sql.categoryById.get(id)) });
+    }
+    const adminVideoThumbnail = pathname.match(/^\/api\/admin\/videos\/(\d+)\/thumbnail$/);
+    if (adminVideoThumbnail && ['GET','HEAD'].includes(req.method)) {
+      requireAdmin(req);
+      const row = sql.video.get(videoId(adminVideoThumbnail[1]));
+      if (!row) throw httpError(404, 'Video not found.');
+      return await streamVideoThumbnail(req,res,row,true,url);
+    }
+    if (adminVideoThumbnail && req.method === 'PUT') {
+      requireAdmin(req);
+      const id = videoId(adminVideoThumbnail[1]), row = sql.video.get(id);
+      if (!row) throw httpError(404, 'Video not found.');
+      if (!row.file_path) throw httpError(409, 'Upload the video file before setting a thumbnail.');
+      const {data,ext} = await readVideoThumbnail(req);
+      const filename = `${crypto.randomUUID()}${ext}`;
+      const target = path.join(VIDEO_THUMBNAIL_DIR,filename);
+      try { await fsp.writeFile(target,data,{flag:'wx',mode:0o600}); }
+      catch(error){ await fsp.unlink(target).catch(() => {}); throw error; }
+      const guid = bunnyVideoId(row.file_path);
+      try {
+        if (guid) await bunnySetThumbnail(guid,data);
+        sql.setVideoThumbnail.run(filename,Date.now(),id);
+      } catch(error) {
+        await fsp.unlink(target).catch(() => {});
+        throw error;
+      }
+      const previous = videoThumbnailName(row.thumbnail_path);
+      if (previous) await fsp.unlink(path.join(VIDEO_THUMBNAIL_DIR,previous)).catch(error => {
+        if (error.code !== 'ENOENT') console.error('Could not remove replaced video thumbnail:',error);
+      });
+      return sendJSON(res,200,{item:mapVideo(sql.video.get(id),true)});
+    }
+    if (adminVideoThumbnail && req.method === 'DELETE') {
+      requireAdmin(req);
+      const id = videoId(adminVideoThumbnail[1]), row = sql.video.get(id);
+      if (!row) throw httpError(404, 'Video not found.');
+      const previous = videoThumbnailName(row.thumbnail_path);
+      if (previous && bunnyVideoId(row.file_path)) await bunnySetThumbnail(bunnyVideoId(row.file_path));
+      sql.setVideoThumbnail.run(null,Date.now(),id);
+      if (previous) await fsp.unlink(path.join(VIDEO_THUMBNAIL_DIR,previous)).catch(error => {
+        if (error.code !== 'ENOENT') console.error('Could not remove video thumbnail:',error);
+      });
+      return sendJSON(res,200,{item:mapVideo(sql.video.get(id),true)});
     }
     const adminVideoFileMatch = pathname.match(/^\/api\/admin\/videos\/(\d+)\/file$/);
     const bunnyUploadMatch = pathname.match(/^\/api\/admin\/videos\/(\d+)\/bunny-upload(?:\/(complete|status))?$/);
@@ -1390,6 +1482,10 @@ const server = http.createServer(async (req, res) => {
       const pending = db.prepare('SELECT guid FROM bunny_uploads WHERE video_id=?').get(id);
       if (pending) await bunnyAPI('DELETE', `/${pending.guid}`);
       sql.deleteVideo.run(id);
+      const thumbnail = videoThumbnailName(row.thumbnail_path);
+      if (thumbnail) await fsp.unlink(path.join(VIDEO_THUMBNAIL_DIR,thumbnail)).catch(error => {
+        if (error.code !== 'ENOENT') console.error('Could not remove deleted video thumbnail:',error);
+      });
       if (getSettings().featuredVideoId === String(id)) sql.setSetting.run('featuredVideoId', '');
       return sendJSON(res, 200, { ok: true });
     }

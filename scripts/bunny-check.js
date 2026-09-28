@@ -8,6 +8,15 @@ if (process.env.AURA_BUNNY_TEST_SERVER === '1') {
   global.fetch = async (input, options) => {
     const url = new URL(input);
     if (url.origin !== 'https://video.bunnycdn.com' || options.headers.AccessKey !== 'fake-private-library-key') throw new Error('Unexpected Bunny API request');
+    const thumbnail = /^\/library\/123\/videos\/([a-f0-9-]{36})\/thumbnail$/.exec(url.pathname);
+    if (thumbnail) {
+      const video = records.get(thumbnail[1]);
+      if (!video) return new Response('',{status:404});
+      if (options.method !== 'POST' || options.headers['Content-Type'] !== 'application/octet-stream') throw new Error('Unexpected Bunny thumbnail request');
+      video.thumbnail = url.searchParams.get('thumbnailUrl') || Buffer.from(options.body);
+      process.send?.(url.searchParams.has('thumbnailUrl') ? {type:'thumbnail-reset',value:url.searchParams.get('thumbnailUrl')} : {type:'thumbnail-upload',isBuffer:Buffer.isBuffer(options.body),size:Buffer.byteLength(options.body)});
+      return Response.json({success:true,statusCode:200});
+    }
     const match = /^\/library\/123\/videos(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
     if (!match) return new Response('',{status:404});
     if (options.method === 'POST' && !match[1]) {
@@ -80,16 +89,17 @@ if (process.env.AURA_BUNNY_TEST_SERVER === '1') {
       DATA_DIR:path.join(dir,'data'),VIDEO_DIR:path.join(dir,'videos'),BUNNY_LIBRARY_ID:'123',BUNNY_STREAM_API_KEY:'fake-private-library-key',BUNNY_TOKEN_KEY:'fake-private-token-key',BUNNY_PULL_ZONE:'test.b-cdn.net'},
       stdio:['ignore','ignore','pipe','ipc']});
     let logs='';child.stderr.on('data',chunk=>logs+=chunk);
-    async function call(url,{host=adminHost,cookie,method='GET',json}={}){
-      const body=json===undefined?null:Buffer.from(JSON.stringify(json));
+    const bunnyObservations=[];child.on('message',message=>{if(message?.type?.startsWith('thumbnail-'))bunnyObservations.push(message);});
+    async function call(url,{host=adminHost,cookie,method='GET',json,bytes,mime='application/octet-stream'}={}){
+      const body=json===undefined?(bytes || null):Buffer.from(JSON.stringify(json));
       return new Promise((resolve,reject)=>{
         const headers={Host:`${host}:${port}`};
         if(cookie)headers.Cookie=cookie;
-        if(body){headers['Content-Type']='application/json';headers['Content-Length']=body.length;}
+        if(body){headers['Content-Type']=json===undefined?mime:'application/json';headers['Content-Length']=body.length;}
         if(['POST','PUT','PATCH','DELETE'].includes(method))headers.Origin=`http://${host}:${port}`;
         const request=http.request({host:'127.0.0.1',port,path:url,method,headers},response=>{
           const chunks=[];response.on('data',chunk=>chunks.push(chunk));
-          response.on('end',()=>{const raw=Buffer.concat(chunks).toString();resolve({status:response.statusCode,headers:response.headers,data:response.headers['content-type']?.includes('application/json')?JSON.parse(raw):raw});});
+          response.on('end',()=>{const bytes=Buffer.concat(chunks),raw=bytes.toString();resolve({status:response.statusCode,headers:response.headers,data:response.headers['content-type']?.includes('application/json')?JSON.parse(raw):raw,raw:bytes});});
         });
         request.on('error',reject);request.end(body);
       });
@@ -135,13 +145,28 @@ if (process.env.AURA_BUNNY_TEST_SERVER === '1') {
       assert.equal(published.status,200,JSON.stringify(published.data));
       const publicEmbed=await call(`/api/videos/${id}/embed`,{host:siteHost});
       assert.equal(publicEmbed.status,200);
-      assert.equal((await call('/api/catalog',{host:siteHost})).data.videos[0].bunny,true);
+      const catalog=(await call('/api/catalog',{host:siteHost})).data;
+      assert.equal(catalog.videos[0].bunny,true);
+      const thumbnailBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
+      const custom=await call(`/api/admin/videos/${id}/thumbnail`,{...auth,method:'PUT',bytes:thumbnailBytes,mime:'image/png'});
+      assert.equal(custom.status,200,JSON.stringify(custom.data));
+      assert.ok(custom.data.item.thumbnail);
+      assert.deepEqual(bunnyObservations.at(-1),{type:'thumbnail-upload',isBuffer:true,size:thumbnailBytes.length},'AURA sends raw thumbnail bytes to Bunny on the server');
+      const adminThumbnail=await call(custom.data.item.thumbnail,auth);
+      assert.equal(adminThumbnail.status,200); assert.equal(adminThumbnail.headers['content-type'],'image/png');
+      const publicCatalog=(await call('/api/catalog',{host:siteHost})).data;
+      assert.match(publicCatalog.videos[0].thumbnail,/^\/api\/videos\//);
+      assert.equal((await call(publicCatalog.videos[0].thumbnail,{host:siteHost})).status,200);
+      const reset=await call(`/api/admin/videos/${id}/thumbnail`,{...auth,method:'DELETE'});
+      assert.equal(reset.status,200,JSON.stringify(reset.data));
+      assert.equal(reset.data.item.thumbnail,null);
+      assert.deepEqual(bunnyObservations.at(-1),{type:'thumbnail-reset',value:'thumbnail_1.jpg'},'Reset asks Bunny to restore its generated thumbnail');
       const directory=path.join(dir,'backup');
       await backup({dataDir:path.join(dir,'data'),videoDir:path.join(dir,'videos'),destination:directory});
       await verify(directory);
       assert.equal((await call(`/api/admin/videos/${id}`,{...auth,method:'DELETE'})).status,200);
       assert.equal((await call(`/api/videos/${id}/embed`,{host:siteHost})).status,404);
-      console.log('Bunny checks passed: admin-only signed upload, draft isolation, processing gate, embed tokens, deletion, and metadata backup.');
+      console.log('Bunny checks passed: admin-only signed upload, draft isolation, processing gate, embed tokens, custom thumbnail upload/reset, deletion, and metadata backup.');
     }finally{child.kill();await new Promise(resolve=>child.once('exit',resolve));await fs.rm(dir,{recursive:true,force:true});}
   }
   main().catch(error=>{console.error(error);process.exitCode=1;});

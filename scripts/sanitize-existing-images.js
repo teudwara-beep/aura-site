@@ -37,13 +37,18 @@ async function main() {
       ...db.prepare('SELECT id,image_path FROM categories WHERE image_path IS NOT NULL').all()
         .map(row => ({name:row.image_path,dir:'category-images'})),
       ...db.prepare('SELECT id,file_path FROM gallery_images').all()
-        .map(row => ({id:row.id,name:row.file_path,dir:'gallery-images'}))
+        .map(row => ({id:row.id,name:row.file_path,dir:'gallery-images'})),
+      ...(db.prepare('PRAGMA table_info(videos)').all().some(column => column.name === 'thumbnail_path')
+        ? db.prepare('SELECT id,thumbnail_path FROM videos WHERE thumbnail_path IS NOT NULL').all()
+          .map(row => ({id:row.id,name:row.thumbnail_path,dir:'video-thumbnails'}))
+        : [])
     ];
     for (const image of images) {
       if (!NAME.test(image.name)) throw new Error(`Unexpected image name: ${image.name}`);
       const filename = path.join(base,image.dir,image.name);
       const stat = await fs.lstat(filename);
-      if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new Error(`Invalid image: ${filename}`);
+      const maxBytes = image.dir === 'gallery-images' ? 8 * 1024 * 1024 : 3 * 1024 * 1024;
+      if (!stat.isFile() || stat.size > maxBytes) throw new Error(`Invalid image: ${filename}`);
       const bytes = await fs.readFile(filename);
       const mime = image.name.endsWith('.jpg') ? 'image/jpeg' : image.name.endsWith('.png') ? 'image/png' : 'image/webp';
       const clean = sanitizeImage(bytes,mime);

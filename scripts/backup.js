@@ -11,6 +11,7 @@ const MEDIA_NAME = /^[a-f0-9-]{36}\.(mp4|webm)$/i;
 const BUNNY_MEDIA_NAME = /^bunny:[a-f0-9-]{36}$/i;
 const CATEGORY_IMAGE_NAME = /^[a-f0-9-]{36}\.(jpg|png|webp)$/i;
 const GALLERY_IMAGE_NAME = CATEGORY_IMAGE_NAME;
+const VIDEO_THUMBNAIL_NAME = CATEGORY_IMAGE_NAME;
 
 function loadEnvironment() {
   const file = path.join(ROOT, '.env');
@@ -59,6 +60,12 @@ function galleryImageRows(db) {
   for (const row of rows) if (!GALLERY_IMAGE_NAME.test(row.file_path)) throw new Error('Database contains an unsupported collection image filename.');
   return rows;
 }
+function videoThumbnailRows(db) {
+  if (!db.prepare('PRAGMA table_info(videos)').all().some(column => column.name === 'thumbnail_path')) return [];
+  const rows = db.prepare('SELECT thumbnail_path FROM videos WHERE thumbnail_path IS NOT NULL').all();
+  for (const row of rows) if (!VIDEO_THUMBNAIL_NAME.test(row.thumbnail_path)) throw new Error('Database contains an unsupported video thumbnail filename.');
+  return rows;
+}
 async function newDestination(destination) {
   await fsp.mkdir(path.dirname(destination), { recursive: true });
   // No recursive mkdir here: even an empty existing destination is refused.
@@ -83,13 +90,14 @@ async function backup({ dataDir, videoDir, destination }) {
     } finally { source.close(); }
     await fsp.chmod(databasePath, 0o600);
     const snapshot = new DatabaseSync(databasePath);
-    let rows, images, galleryImages;
+    let rows, images, galleryImages, thumbnails;
     try {
       // Restore uses the administrator configured in .env, never old sessions.
       snapshot.exec('PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; DELETE FROM sessions; DELETE FROM admins; VACUUM;');
       rows = mediaRows(snapshot);
       images = categoryImageRows(snapshot);
       galleryImages = galleryImageRows(snapshot);
+      thumbnails = videoThumbnailRows(snapshot);
     } finally { snapshot.close(); }
     await fsp.mkdir(path.join(destination, 'videos'), { mode: 0o700 });
     const files = [{ path: 'aura.sqlite', ...await fingerprint(databasePath) }];
@@ -111,6 +119,13 @@ async function backup({ dataDir, videoDir, destination }) {
       if (info.size !== Number(row.file_size)) throw new Error('Collection image size differs from the catalog.');
       files.push({ path: relative, ...info });
     }
+    if (thumbnails.length) await fsp.mkdir(path.join(destination, 'video-thumbnails'), { mode: 0o700 });
+    for (const row of thumbnails) {
+      const relative = `video-thumbnails/${row.thumbnail_path}`;
+      const info = await copyChecked(path.join(dataDir, 'video-thumbnails', row.thumbnail_path), path.join(destination, relative));
+      if (!info.size || info.size > 3 * 1024 * 1024) throw new Error('Video thumbnail is larger than the 3 MB limit.');
+      files.push({ path: relative, ...info });
+    }
     const manifest = { format: 'aura-backup', version: 1, createdAt: new Date().toISOString(), files };
     await fsp.writeFile(path.join(destination, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return manifest;
@@ -129,7 +144,7 @@ async function verify(directory) {
   if (!(await fsp.lstat(path.join(directory, 'videos'))).isDirectory()) throw new Error('Invalid backup video directory.');
   const paths = new Set();
   for (const file of manifest.files) {
-    if (!file || typeof file.path !== 'string' || !(file.path === 'aura.sqlite' || (file.path.startsWith('videos/') && MEDIA_NAME.test(file.path.slice(7))) || (file.path.startsWith('images/') && CATEGORY_IMAGE_NAME.test(file.path.slice(7))) || (file.path.startsWith('gallery-images/') && GALLERY_IMAGE_NAME.test(file.path.slice(15))))) throw new Error('Invalid backup file path.');
+    if (!file || typeof file.path !== 'string' || !(file.path === 'aura.sqlite' || (file.path.startsWith('videos/') && MEDIA_NAME.test(file.path.slice(7))) || (file.path.startsWith('images/') && CATEGORY_IMAGE_NAME.test(file.path.slice(7))) || (file.path.startsWith('gallery-images/') && GALLERY_IMAGE_NAME.test(file.path.slice(15))) || (file.path.startsWith('video-thumbnails/') && VIDEO_THUMBNAIL_NAME.test(file.path.slice(17))))) throw new Error('Invalid backup file path.');
     if (paths.has(file.path) || !Number.isSafeInteger(file.size) || file.size < 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('Invalid backup file record.');
     paths.add(file.path);
     const actual = await fingerprint(path.join(directory, file.path));
@@ -141,7 +156,8 @@ async function verify(directory) {
     const rows = mediaRows(db);
     const images = categoryImageRows(db);
     const galleryImages = galleryImageRows(db);
-    if (rows.length + images.length + galleryImages.length + 1 !== paths.size || rows.some(row => !paths.has(`videos/${row.file_path}`)) || images.some(row => !paths.has(`images/${row.image_path}`)) || galleryImages.some(row => !paths.has(`gallery-images/${row.file_path}`))) throw new Error('Backup does not contain every referenced media file.');
+    const thumbnails = videoThumbnailRows(db);
+    if (rows.length + images.length + galleryImages.length + thumbnails.length + 1 !== paths.size || rows.some(row => !paths.has(`videos/${row.file_path}`)) || images.some(row => !paths.has(`images/${row.image_path}`)) || galleryImages.some(row => !paths.has(`gallery-images/${row.file_path}`)) || thumbnails.some(row => !paths.has(`video-thumbnails/${row.thumbnail_path}`))) throw new Error('Backup does not contain every referenced media file.');
     for (const row of rows) {
       const entry = manifest.files.find(file => file.path === `videos/${row.file_path}`);
       if (entry.size !== Number(row.file_size)) throw new Error('Backup catalog and media sizes do not match.');
@@ -153,6 +169,10 @@ async function verify(directory) {
     for (const row of galleryImages) {
       const entry = manifest.files.find(file => file.path === `gallery-images/${row.file_path}`);
       if (!entry || entry.size !== Number(row.file_size) || entry.size > 8 * 1024 * 1024) throw new Error('Invalid collection image in backup.');
+    }
+    for (const row of thumbnails) {
+      const entry = manifest.files.find(file => file.path === `video-thumbnails/${row.thumbnail_path}`);
+      if (!entry || !entry.size || entry.size > 3 * 1024 * 1024) throw new Error('Invalid video thumbnail in backup.');
     }
     if (db.prepare('SELECT COUNT(*) AS count FROM sessions').get().count || db.prepare('SELECT COUNT(*) AS count FROM admins').get().count) throw new Error('Backup must not contain admin credentials or sessions.');
   } finally { db.close(); }
@@ -168,8 +188,9 @@ async function restore({ source, destination }) {
     await fsp.mkdir(path.join(destination, 'videos'), { mode: 0o700 });
     if (manifest.files.some(file => file.path.startsWith('images/'))) await fsp.mkdir(path.join(destination, 'data', 'category-images'), { mode: 0o700 });
     if (manifest.files.some(file => file.path.startsWith('gallery-images/'))) await fsp.mkdir(path.join(destination, 'data', 'gallery-images'), { mode: 0o700 });
+    if (manifest.files.some(file => file.path.startsWith('video-thumbnails/'))) await fsp.mkdir(path.join(destination, 'data', 'video-thumbnails'), { mode: 0o700 });
     for (const file of manifest.files) {
-      const target = file.path === 'aura.sqlite' ? 'data/aura.sqlite' : file.path.startsWith('images/') ? `data/category-images/${file.path.slice(7)}` : file.path.startsWith('gallery-images/') ? `data/gallery-images/${file.path.slice(15)}` : file.path;
+      const target = file.path === 'aura.sqlite' ? 'data/aura.sqlite' : file.path.startsWith('images/') ? `data/category-images/${file.path.slice(7)}` : file.path.startsWith('gallery-images/') ? `data/gallery-images/${file.path.slice(15)}` : file.path.startsWith('video-thumbnails/') ? `data/video-thumbnails/${file.path.slice(17)}` : file.path;
       await copyChecked(path.join(source, file.path), path.join(destination, target), file);
     }
     return { dataDir: path.join(destination, 'data'), videoDir: path.join(destination, 'videos') };
@@ -185,10 +206,10 @@ async function main() {
   if (command === 'create' && !second) {
     const destination = path.resolve(first || path.join(ROOT, 'backups', `aura-${new Date().toISOString().replace(/[:.]/g, '-')}`));
     const result = await backup({ dataDir: path.resolve(ROOT, process.env.DATA_DIR || 'data'), videoDir: path.resolve(ROOT, process.env.VIDEO_DIR || 'storage/videos'), destination });
-    console.log(`Backup complete: ${destination}\n${result.files.filter(file => file.path.startsWith('videos/')).length} videos, ${result.files.filter(file => file.path.startsWith('images/')).length} category images and ${result.files.filter(file => file.path.startsWith('gallery-images/')).length} collection images included. Copy this folder to a separate disk.`);
+    console.log(`Backup complete: ${destination}\n${result.files.filter(file => file.path.startsWith('videos/')).length} videos, ${result.files.filter(file => file.path.startsWith('images/')).length} category images, ${result.files.filter(file => file.path.startsWith('gallery-images/')).length} collection images and ${result.files.filter(file => file.path.startsWith('video-thumbnails/')).length} video thumbnails included. Copy this folder to a separate disk.`);
   } else if (command === 'verify' && first && !second) {
     const result = await verify(first);
-    console.log(`Backup verified: database, ${result.files.filter(file => file.path.startsWith('videos/')).length} videos, ${result.files.filter(file => file.path.startsWith('images/')).length} category images and ${result.files.filter(file => file.path.startsWith('gallery-images/')).length} collection images.`);
+    console.log(`Backup verified: database, ${result.files.filter(file => file.path.startsWith('videos/')).length} videos, ${result.files.filter(file => file.path.startsWith('images/')).length} category images, ${result.files.filter(file => file.path.startsWith('gallery-images/')).length} collection images and ${result.files.filter(file => file.path.startsWith('video-thumbnails/')).length} video thumbnails.`);
   } else if (command === 'restore' && first && second) {
     const result = await restore({ source: first, destination: second });
     console.log(`Restore complete in a new directory. Stop the server, set these in .env, then restart:\nDATA_DIR=${result.dataDir}\nVIDEO_DIR=${result.videoDir}\nUse your existing ADMIN_EMAIL, ADMIN_PASSWORD and SESSION_SECRET.`);
