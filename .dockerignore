@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+data/*
+!data/.gitkeep
+storage/videos/*
+!storage/videos/.gitkeep
+backups
+restored
+node_modules
+coverage
+*.log
+*.zip

@@ -21,6 +21,8 @@ aura-site-project/
 ├── scripts/backup.js       # Full backup, checksum verification and safe restore
 ├── index.html
 ├── server.js               # API, admin authentication, video storage and static server
+├── Dockerfile              # Production container for CapRover
+├── captain-definition      # CapRover build instructions
 ├── .env.example
 └── package.json
 ```
@@ -160,6 +162,18 @@ After buying your domain, replace `example.com` with your domain and:
 3. Enable HTTPS for both hostnames. Visit the main domain for viewers and `https://admin.example.com` for the admin login.
 
 The admin session cookie is scoped to the admin hostname and is not shared with the public site. Do not enable broad cross-origin API access; the admin UI and API use the same admin hostname.
+
+### CapRover deployment
+
+The repository already includes `Dockerfile` and the root `captain-definition`. In CapRover:
+
+1. Set **Container HTTP Port** to `4180` and keep **Instance Count** at `1` because SQLite is a single-node database.
+2. Add one persistent directory/volume with container path `/app/persistent`. Without it, the SQLite catalog and uploaded site images disappear on the next deployment. Back up this volume separately.
+3. Add private environment variables: `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_HOST=admin.yourdomain.com`, plus the four optional Bunny values. The Docker image already sets `NODE_ENV=production`, `HOST=0.0.0.0`, `PORT=4180`, `DATA_DIR=/app/persistent/data`, and `VIDEO_DIR=/app/persistent/videos`.
+4. Attach both `yourdomain.com` and `admin.yourdomain.com` to this same app. Enable HTTPS and **Force HTTPS** for both. Set the Bunny Allowed Domains to these exact hostnames without `https://`.
+5. In CapRover Git deployment, use repository `github.com/teudwara-beep/aura-site` and branch `main`. For a public repository, CapRover accepts any nonempty password value; do not paste a GitHub Personal Access Token. Add the CapRover webhook to the GitHub repository only after keeping its URL private.
+
+Changing VPS or domain does not require editing application code. Update CapRover environment variables, domain/DNS and Bunny Allowed Domains, then restart/deploy. Preserve `/app/persistent` during every update.
 
 ### Security before public launch
 
