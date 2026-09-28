@@ -1,0 +1,24 @@
+{
+  "name": "aura-site-project",
+  "version": "1.8.0",
+  "private": true,
+  "description": "AURA curated video site with an admin-only publishing backend",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check lib/image-sanitize.js && node --check js/app.js && node --check scripts/sanitize-existing-images.js && node --check scripts/smoke.js && node --check scripts/bunny-check.js && node --check scripts/backup.js && node --check scripts/catalog-check.js && node --check scripts/collections-check.js && node --check scripts/removal-check.js && node --check scripts/mobile-preview-check.js && node scripts/check-html.js",
+    "smoke": "node scripts/smoke.js",
+    "test:player": "node scripts/player-check.js",
+    "test:mobile-preview": "node scripts/mobile-preview-check.js",
+    "test:catalog": "node scripts/catalog-check.js",
+    "test:collections": "node scripts/collections-check.js",
+    "test:removal": "node scripts/removal-check.js",
+    "test:bunny": "node scripts/bunny-check.js",
+    "backup": "node scripts/backup.js create",
+    "backup:verify": "node scripts/backup.js verify",
+    "restore": "node scripts/backup.js restore"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

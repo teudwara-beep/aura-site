@@ -1,0 +1,9 @@
+{
+  "name": "AURA — Curated",
+  "short_name": "AURA",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0B0B0D",
+  "theme_color": "#0B0B0D"
+}

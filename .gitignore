@@ -1,0 +1,22 @@
+# Private credentials
+.env
+.env.*
+!.env.example
+
+# Generated catalog database and uploaded media
+/data/*
+!/data/.gitkeep
+/storage/videos/*
+!/storage/videos/.gitkeep
+/backups/
+/restored/
+
+# Dependencies and generated files
+node_modules/
+coverage/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

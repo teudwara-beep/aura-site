@@ -1,0 +1,23 @@
+name: Check project
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm run check
+      - run: npm run test:player
+      - run: npm run test:mobile-preview
+      - run: npm run test:catalog
+      - run: npm run test:collections
+      - run: npm run test:removal
+      - run: npm run test:bunny
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm run smoke
