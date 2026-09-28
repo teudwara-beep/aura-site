@@ -1171,6 +1171,7 @@ async function renderWatch(id){
           <span class="player-title">${esc(v.t)} · ${esc(SITE_SETTINGS.siteName || 'AURA')}</span>
         </div>
         <video id="video" src="${source}" preload="metadata" playsinline></video>
+        <div class="seek-feedback" id="seekFeedback" role="status" aria-live="polite" aria-atomic="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7"/><path d="M4 4v4.7h4.7"/><path d="M12 8v4l2.8 1.7"/></svg><span id="seekFeedbackText">10 seconds</span></div>
         <div class="spinner"></div>
         <div class="player-error" id="playerError" role="alert" hidden><p>Video unavailable. Check your connection or try another browser.</p><button class="mbtn" id="retryVideo">Try again</button></div>
         <div class="center-play"><button id="centerPlay" aria-label="Play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button></div>
@@ -1254,7 +1255,7 @@ async function renderWatch(id){
 
   if (v.bunny) {
     // Bunny's responsive player provides quality selection and native mobile controls.
-    $('#player').innerHTML = '<iframe id="bunnyPlayer" title="Video player" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    $('#player').innerHTML = '<iframe id="bunnyPlayer" title="Video player" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><div class="bunny-gesture-zone back" id="bunnyTouchBack" aria-hidden="true"></div><div class="bunny-gesture-zone forward" id="bunnyTouchForward" aria-hidden="true"></div><div class="seek-feedback" id="seekFeedback" role="status" aria-live="polite" aria-atomic="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7"/><path d="M4 4v4.7h4.7"/><path d="M12 8v4l2.8 1.7"/></svg><span id="seekFeedbackText">10 seconds</span></div>';
     $('#player').classList.add('bunny-player');
   }
 
@@ -1274,14 +1275,112 @@ async function renderWatch(id){
   loadRelatedVideos(v, watchRequestToken);
 }
 
+function bindMobileDoubleTap(target, {getSide, onSingleTap, onDoubleTap}){
+  let touchStart = null, pendingTap = null, suppressClickUntil = 0;
+  const finishPending = run => {
+    if (!pendingTap) return;
+    clearTimeout(pendingTap.timer);
+    const tap = pendingTap;
+    pendingTap = null;
+    if (run) onSingleTap(tap.side);
+  };
+  const onPointerDown = event => {
+    if (event.pointerType !== 'touch' || event.isPrimary === false || (event.button !== undefined && event.button !== 0)) return;
+    if (event.target?.closest?.('button,input,select,textarea,a,.controls,.player-top,.player-error')) return;
+    touchStart = {x:event.clientX, y:event.clientY, at:Date.now(), side:getSide(event)};
+  };
+  const onPointerMove = event => {
+    if (!touchStart || event.pointerType !== 'touch') return;
+    if (Math.hypot(event.clientX - touchStart.x, event.clientY - touchStart.y) > 22) touchStart = null;
+  };
+  const onPointerUp = event => {
+    if (!touchStart || event.pointerType !== 'touch') return;
+    const start = touchStart;
+    touchStart = null;
+    const elapsed = Date.now() - start.at;
+    if (elapsed > 500 || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 22) return;
+    const side = start.side;
+    const now = Date.now();
+    suppressClickUntil = now + 800;
+    if (pendingTap && pendingTap.side === side && now - pendingTap.at <= 300) {
+      finishPending(false);
+      onDoubleTap(side);
+      return;
+    }
+    if (pendingTap) finishPending(true);
+    const tap = {side, at:now, timer:null};
+    tap.timer = setTimeout(() => {
+      if (pendingTap !== tap) return;
+      pendingTap = null;
+      onSingleTap(side);
+    }, 300);
+    pendingTap = tap;
+  };
+  const onPointerCancel = () => { touchStart = null; };
+  const onClickCapture = event => {
+    if (Date.now() > suppressClickUntil || event.detail === 0) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  target.addEventListener('pointerdown', onPointerDown, {passive:true});
+  target.addEventListener('pointermove', onPointerMove, {passive:true});
+  target.addEventListener('pointerup', onPointerUp, {passive:true});
+  target.addEventListener('pointercancel', onPointerCancel, {passive:true});
+  target.addEventListener('click', onClickCapture, {capture:true});
+  return () => {
+    touchStart = null;
+    finishPending(false);
+    target.removeEventListener('pointerdown', onPointerDown);
+    target.removeEventListener('pointermove', onPointerMove);
+    target.removeEventListener('pointerup', onPointerUp);
+    target.removeEventListener('pointercancel', onPointerCancel);
+    target.removeEventListener('click', onClickCapture, {capture:true});
+  };
+}
+
+const playerFeedbackTimers = new WeakMap();
+function clearPlayerSeekFeedback(player){
+  if (playerFeedbackTimers.has(player)) clearTimeout(playerFeedbackTimers.get(player));
+  playerFeedbackTimers.delete(player);
+  player.querySelector('#seekFeedback')?.classList.remove('show','back','forward');
+}
+function showPlayerSeekFeedback(player, direction){
+  const feedback = player.querySelector('#seekFeedback');
+  if (!feedback) return;
+  if (playerFeedbackTimers.has(player)) clearTimeout(playerFeedbackTimers.get(player));
+  feedback.classList.remove('show','back','forward');
+  void feedback.offsetWidth;
+  feedback.classList.add(direction,'show');
+  feedback.setAttribute('aria-label', direction === 'back' ? '10 seconds back' : '10 seconds forward');
+  const text = feedback.querySelector('#seekFeedbackText');
+  if (text) text.textContent = direction === 'back' ? '−10s' : '+10s';
+  playerFeedbackTimers.set(player, setTimeout(() => {
+    feedback.classList.remove('show');
+    playerFeedbackTimers.delete(player);
+  }, 750));
+}
+
 let bunnyPlayerScript = null;
 function loadBunnyPlayerJS(){
   if (window.playerjs?.Player) return Promise.resolve();
   if (!bunnyPlayerScript) bunnyPlayerScript = new Promise((resolve, reject) => {
     const script = document.createElement('script');
+    let timeout = null, settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      script.onload = script.onerror = null;
+      if (error) {
+        script.remove();
+        bunnyPlayerScript = null;
+        reject(error);
+      } else resolve();
+    };
     script.src = 'https://assets.mediadelivery.net/playerjs/playerjs-latest.min.js';
-    script.onload = resolve;
-    script.onerror = () => { bunnyPlayerScript = null; reject(new Error('Bunny player controls could not load.')); };
+    script.onload = () => finish(window.playerjs?.Player ? null : new Error('Bunny player controls did not initialize.'));
+    script.onerror = () => finish(new Error('Bunny player controls could not load.'));
+    timeout = setTimeout(() => finish(new Error('Bunny player controls timed out. Check your connection and retry.')), 15000);
     document.head.appendChild(script);
   });
   return bunnyPlayerScript;
@@ -1292,8 +1391,52 @@ async function bindBunnyPlayer(v){
   if (!frame?.isConnected || currentVideoId !== v.id || views.watch.hidden) return;
   frame.src = url;
   let instance, lastTime = 0, duration = v.duration || durToSec(v.d), recorded = false;
+  let readyTimer = null, ready = false, isPlaying = false;
+  const touchCleanups = [];
   const save = () => { if (PREFS.saveHistory && lastTime >= 3) addToHistory(v.id, lastTime, duration); };
-  playerCleanup = () => { save(); instance?.off(); frame.removeAttribute('src'); };
+  const showError = message => {
+    if (!frame.isConnected || currentVideoId !== v.id || views.watch.hidden) return;
+    const existing = $('#bunnyPlaybackError');
+    if (existing) existing.remove();
+    const error = document.createElement('div');
+    error.className = 'player-error';
+    error.id = 'bunnyPlaybackError';
+    error.setAttribute('role','alert');
+    error.innerHTML = `<p>${esc(message || 'Video could not be played. Check your connection and try again.')}</p><button class="mbtn" id="retryBunny">Try again</button>`;
+    $('#player').append(error);
+    $('#retryBunny').onclick = () => goWatch(v.id);
+  };
+  const toggleBunnyPlayback = () => {
+    if (!ready || !instance) return;
+    if (isPlaying) instance.pause();
+    else instance.play();
+  };
+  const seekBunny = direction => {
+    if (!ready || !instance || typeof instance.getCurrentTime !== 'function') return;
+    instance.getCurrentTime(value => {
+      const current = Number(value);
+      if (!Number.isFinite(current)) return;
+      const max = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
+      const next = Math.max(0, Math.min(max, current + direction * 10));
+      try {
+        instance.setCurrentTime(next);
+        lastTime = next;
+        showPlayerSeekFeedback($('#player'), direction < 0 ? 'back' : 'forward');
+        save();
+      } catch (error) { console.warn('Could not seek Bunny video:', error); }
+    });
+  };
+  const leftZone = $('#bunnyTouchBack'), rightZone = $('#bunnyTouchForward');
+  if (leftZone) touchCleanups.push(bindMobileDoubleTap(leftZone, {getSide:()=>'back', onSingleTap:toggleBunnyPlayback, onDoubleTap:()=>seekBunny(-1)}));
+  if (rightZone) touchCleanups.push(bindMobileDoubleTap(rightZone, {getSide:()=>'forward', onSingleTap:toggleBunnyPlayback, onDoubleTap:()=>seekBunny(1)}));
+  playerCleanup = () => {
+    clearTimeout(readyTimer);
+    touchCleanups.forEach(cleanup => cleanup());
+    clearPlayerSeekFeedback($('#player'));
+    save();
+    instance?.off();
+    frame.removeAttribute('src');
+  };
   $('#likeBtn').onclick = function(){
     const on = toggleFavorite(v.id); this.classList.toggle('on',on);
     this.querySelector('svg').setAttribute('fill',on?'currentColor':'none');
@@ -1303,29 +1446,52 @@ async function bindBunnyPlayer(v){
   $('#shareBtn').onclick = () => copyVideoLink(v.id,v.t,true);
   $('#reportBtn').onclick = () => openRemovalRequest(v);
   $('#descToggle').onclick = () => {const d=$('#desc');d.classList.toggle('open');$('#descLabel').textContent=d.classList.contains('open')?'Hide description':'Show description';};
-  try {
-    await loadBunnyPlayerJS();
-    if (!frame.isConnected || currentVideoId !== v.id || views.watch.hidden) return;
-    instance = new window.playerjs.Player(frame);
+  await loadBunnyPlayerJS();
+  if (!frame.isConnected || currentVideoId !== v.id || views.watch.hidden) return;
+  instance = new window.playerjs.Player(frame);
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(readyTimer);
+      readyTimer = null;
+      error ? reject(error) : resolve();
+    };
+    readyTimer = setTimeout(() => settle(new Error('Bunny player did not become ready. Check the embed domain and network, then retry.')), 25000);
     instance.on('ready', () => {
-      instance.getDuration(value => { if (Number.isFinite(value) && value > 0) duration=value; });
+      ready = true;
+      instance.getDuration(value => { const total=Number(value); if (Number.isFinite(total) && total > 0) duration=total; });
       const previous = HISTORY.find(item => item.id === v.id);
       const position = previous && PREFS.saveHistory ? resumablePosition(previous,duration) : null;
       if (position !== null) instance.setCurrentTime(position);
+      settle();
     });
-    instance.on('play', () => { if (!recorded) { recorded=true; api(`/api/videos/${v.id}/view`,{method:'POST',body:'{}'}).catch(()=>{}); } });
+    instance.on('play', () => {
+      isPlaying = true;
+      if (!recorded) { recorded=true; api(`/api/videos/${v.id}/view`,{method:'POST',body:'{}'}).catch(()=>{}); }
+    });
+    instance.on('pause', () => { isPlaying = false; save(); });
     instance.on('timeupdate', data => {
-      if (!data || !Number.isFinite(data.seconds)) return;
+      const seconds = Number(data?.seconds), total = Number(data?.duration);
+      if (!Number.isFinite(seconds)) return;
       const previousSecond=Math.floor(lastTime);
-      lastTime=data.seconds; duration=Number(data.duration)||duration;
+      lastTime=seconds; duration=Number.isFinite(total) && total > 0 ? total : duration;
       if (Math.floor(lastTime)>=5 && Math.floor(lastTime/10)!==Math.floor(previousSecond/10)) save();
     });
-    instance.on('pause',save);
+    const onPlaybackError = data => {
+      const message = typeof data === 'string' ? data : data?.message;
+      if (!ready) settle(new Error(message || 'Bunny could not load this video.'));
+      else showError(message);
+    };
+    instance.on('error', onPlaybackError);
+    instance.on('loaderror', onPlaybackError);
     instance.on('ended', () => {
+      isPlaying = false;
       lastTime=duration; save();
       if(PREFS.autoplay){const next=relatedFor(v)[0]; if(next) setTimeout(()=>{if(currentVideoId===v.id&&!views.watch.hidden)goWatch(next.id);},800);}
     });
-  } catch (error) { console.warn(error.message); }
+  });
 }
 
 /* ============================================================
@@ -1336,9 +1502,11 @@ function bindPlayer(v){
   if (!video || !player) return;
   const controller = new AbortController();
   const listen = (target, type, callback, options={}) => target.addEventListener(type, callback, {...options, signal:controller.signal});
-  let nextTimer = null;
+  let nextTimer = null, gestureCleanup = null;
   playerCleanup = () => {
     if (video.currentTime > 3) addToHistory(v.id, video.currentTime, video.duration || durToSec(v.d));
+    gestureCleanup?.();
+    clearPlayerSeekFeedback(player);
     controller.abort();
     clearTimeout(nextTimer); clearTimeout(idleTimer); clearTimeout(hintTimer);
     video.pause(); video.removeAttribute('src'); video.load();
@@ -1368,12 +1536,16 @@ function bindPlayer(v){
     else listen(video, 'loadedmetadata', resume, {once:true});
   }
 
+  const setPlayButtonState = playing => {
+    $('#playBtn')?.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    $('#centerPlay')?.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  };
   const togglePlay = () => { if (video.paused || video.ended) video.play().catch(()=>{}); else video.pause(); };
   $('#playBtn').onclick = togglePlay;
   $('#centerPlay').onclick = togglePlay;
-  video.onclick = togglePlay;
+  listen(video, 'click', togglePlay);
 
-  listen(video, 'play', () => { player.classList.remove('paused'); $('#playIcon').innerHTML = PAUSE; showControls(); });
+  listen(video, 'play', () => { player.classList.remove('paused'); $('#playIcon').innerHTML = PAUSE; setPlayButtonState(true); showControls(); });
   let viewRecorded = false;
   listen(video, 'playing', () => {
     if (!viewRecorded){
@@ -1386,6 +1558,7 @@ function bindPlayer(v){
   listen(video, 'pause', () => {
     player.classList.add('paused'); player.classList.remove('idle'); clearTimeout(idleTimer);
     $('#playIcon').innerHTML = PLAY;
+    setPlayButtonState(false);
     if (PREFS.saveHistory && video.currentTime > 3) addToHistory(v.id, video.currentTime, video.duration || durToSec(v.d));
   });
   listen(video, 'waiting', () => player.classList.add('buffering'));
@@ -1413,8 +1586,22 @@ function bindPlayer(v){
   listen(player, 'mouseleave', () => { if (!video.paused) player.classList.add('idle'); });
   listen(player, 'touchstart', showControls, {passive:true});
 
-  $('#skipBack').onclick = () => { video.currentTime = Math.max(0, video.currentTime - 10); showControls(); };
-  $('#skipFwd').onclick = () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); showControls(); };
+  const seekBy = seconds => {
+    const current = Number(video.currentTime), end = Number(video.duration);
+    if (video.readyState < 1 || !Number.isFinite(current)) return;
+    try {
+      video.currentTime = Math.max(0, Math.min(Number.isFinite(end) && end >= 0 ? end : Infinity, current + seconds));
+      showPlayerSeekFeedback(player, seconds < 0 ? 'back' : 'forward');
+      showControls();
+    } catch (error) { console.warn('Could not seek video:', error); }
+  };
+  $('#skipBack').onclick = () => seekBy(-10);
+  $('#skipFwd').onclick = () => seekBy(10);
+  gestureCleanup = bindMobileDoubleTap(player, {
+    getSide:event => event.clientX < player.getBoundingClientRect().left + player.getBoundingClientRect().width / 2 ? 'back' : 'forward',
+    onSingleTap:togglePlay,
+    onDoubleTap:side => seekBy(side === 'back' ? -10 : 10)
+  });
 
   /* Timeline */
   const timeline = $('#timeline'), tlFill = $('#tlFill'), tlBuffer = $('#tlBuffer'), tlKnob = $('#tlKnob'), tlPreview = $('#tlPreview');
@@ -1495,7 +1682,15 @@ function bindPlayer(v){
       else toast('Fullscreen is unavailable in this browser.', 'warn');
     } catch { toast('Fullscreen could not be opened.', 'warn'); }
   };
-  listen(document, 'fullscreenchange', () => { $('#fsBtn')?.classList.toggle('active', !!document.fullscreenElement); });
+  const syncFullscreenState = () => {
+    const active = !!(document.fullscreenElement || document.webkitFullscreenElement || document.webkitIsFullScreen || video.webkitDisplayingFullscreen);
+    $('#fsBtn')?.classList.toggle('active', active);
+    $('#fsBtn')?.setAttribute('aria-label', active ? 'Exit fullscreen' : 'Fullscreen');
+  };
+  listen(document, 'fullscreenchange', syncFullscreenState);
+  listen(document, 'webkitfullscreenchange', syncFullscreenState);
+  listen(video, 'webkitbeginfullscreen', syncFullscreenState);
+  listen(video, 'webkitendfullscreen', syncFullscreenState);
 
   /* Keyboard */
   const kbdHint = $('#kbdHint');
