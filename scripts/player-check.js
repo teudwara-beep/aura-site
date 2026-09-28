@@ -13,7 +13,7 @@ class Element extends EventTarget {
     this.tagName = 'DIV'; this.currentTime = 0; this.duration = 100; this.volume = 1;
     this.paused = true; this.readyState = 0; this.buffered = { length:0 }; this.hidden = true;
     const names = new Set();
-    this.classList = { add:name => names.add(name), remove:name => names.delete(name), contains:name => names.has(name), toggle:(name, on = !names.has(name)) => { on ? names.add(name) : names.delete(name); return on; } };
+    this.classList = { add:(...items) => items.forEach(name => names.add(name)), remove:(...items) => items.forEach(name => names.delete(name)), contains:name => names.has(name), toggle:(name, on = !names.has(name)) => { on ? names.add(name) : names.delete(name); return on; } };
   }
   querySelector(key) { if (!this.children.has(key)) this.children.set(key, new Element()); return this.children.get(key); }
   querySelectorAll() { return []; }
@@ -51,6 +51,8 @@ async function main() {
     openModal:options => modals.push(options)
   });
   function $(key) { return select(key); }
+  const gestureStart = source.indexOf('function bindMobileDoubleTap(');
+  vm.runInContext(source.slice(gestureStart, source.indexOf('\nlet bunnyPlayerScript', gestureStart)), context);
   const start = source.indexOf('function bindPlayer(v){');
   vm.runInContext(source.slice(start, source.indexOf('\n/* ===', start)), context);
   // Repeated route changes must leave no global handlers, timers or media handlers behind.
@@ -59,6 +61,7 @@ async function main() {
     context.bindPlayer({id:1, d:'1:40', t:'Sample'});
     const video = select('#video');
     await video.play(); video.currentTime = 20; fire(video, 'timeupdate');
+    assert.equal(select('#playBtn').attributes['aria-label'], 'Pause');
     select('#moreControlsBtn').click();
     assert.equal(select('#moreControlsBtn').attributes['aria-expanded'], 'true');
     assert.equal(select('#controls').classList.contains('expanded'), true);
@@ -72,6 +75,24 @@ async function main() {
     assert.equal(video.currentTime, 50);
     fire(select('#timeline'), 'touchcancel');
     assert.equal(select('#timeline').classList.contains('dragging'), false);
+    // Mobile double taps on the player seek exactly ten seconds; a single tap toggles only after the double-tap window.
+    video.readyState = 1; video.currentTime = 40;
+    const player = select('#player');
+    const tap = x => {
+      fire(player, 'pointerdown', {pointerType:'touch', isPrimary:true, button:0, clientX:x, clientY:40});
+      fire(player, 'pointerup', {pointerType:'touch', isPrimary:true, button:0, clientX:x, clientY:40});
+    };
+    tap(80); tap(80);
+    assert.equal(video.currentTime, 50, 'Right-side mobile double tap seeks forward ten seconds');
+    assert.equal(player.querySelector('#seekFeedback').classList.contains('forward'), true);
+    video.currentTime = 5; tap(20); tap(20);
+    assert.equal(video.currentTime, 0, 'Left-side mobile double tap seeks back ten seconds without going below zero');
+    video.currentTime = 30; tap(80);
+    assert.equal(video.paused, false, 'Single mobile tap waits briefly to distinguish it from a double tap');
+    const tapTimer = Math.max(...timers.keys()); timers.get(tapTimer)(); timers.delete(tapTimer);
+    assert.equal(video.paused, true, 'Single mobile tap toggles play/pause after the gesture window');
+    assert.equal(select('#playBtn').attributes['aria-label'], 'Play');
+    await video.play();
     video.currentTime = 25;
     assert.equal(getEventListeners(document, 'keydown').length, 1);
     fire(video, 'error'); assert.equal(select('#playerError').hidden, false);
@@ -80,8 +101,9 @@ async function main() {
     assert.ok(timers.size > 0);
     context.playerCleanup();
     assert.equal(timers.size, 0, 'Leaving watch cancels autoplay and control timers');
-    for (const [target, types] of [[document,['keydown','click','fullscreenchange']], [window,['mousemove','mouseup']], [video,['pause','error','timeupdate','ended']]]) {
-      for (const type of types) assert.equal(getEventListeners(target, type).length, 0, `${type} listener leaked`);
+    for (const [target, types] of [[document,['keydown','click','fullscreenchange','webkitfullscreenchange']], [window,['mousemove','mouseup']], [player,['pointerdown','pointermove','pointerup','pointercancel','click']], [video,['click','pause','error','timeupdate','ended','webkitbeginfullscreen','webkitendfullscreen']]]) {
+      const name = target === document ? 'document' : target === window ? 'window' : target === player ? 'player' : 'video';
+      for (const type of types) assert.equal(getEventListeners(target, type).length, 0, `${name} ${type} listener leaked`);
     }
   }
   assert.equal(navigations.length, 0);
@@ -106,6 +128,6 @@ async function main() {
   assert.deepEqual(history.at(-1), [7,35,100]);
   mini.currentTime = 100; fire(mini, 'ended');
   assert.deepEqual(history.at(-1), [7,100,100]);
-  console.log('Player checks passed: route cleanup, autoplay cancellation, mobile controls/touch seeking, keyboard seeking, error retry, clipboard fallback, and mini-player history.');
+  console.log('Player checks passed: route cleanup, autoplay cancellation, mobile controls/touch seek gestures, keyboard seeking, player state labels, error retry, clipboard fallback, and mini-player history.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
