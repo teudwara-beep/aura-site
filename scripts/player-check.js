@@ -7,6 +7,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { getEventListeners, setMaxListeners } = require('node:events');
 const source = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '../css/styles.css'), 'utf8');
+assert.match(css, /\.ctrl-row\{gap:0;min-width:0;flex-wrap:wrap\}/,'Expanded mobile controls need a second row');
+assert.match(source, /id="skipBack"[^>]*aria-label="Back 10 seconds"/);
+assert.match(source, /id="skipFwd"[^>]*aria-label="Forward 10 seconds"/);
 class Element extends EventTarget {
   constructor() {
     super(); this.style = {}; this.dataset = {}; this.attributes = {}; this.children = new Map();
@@ -68,6 +72,11 @@ async function main() {
     assert.equal(select('#player').classList.contains('idle'), false);
     select('#moreControlsBtn').click();
     assert.equal(select('#moreControlsBtn').attributes['aria-expanded'], 'false');
+    assert.equal(select('#pipBtn').hidden,true,'Unsupported PiP control must not be offered');
+    select('#theaterBtn').click();
+    assert.equal(select('#theaterBtn').attributes['aria-pressed'],'true');
+    select('#theaterBtn').click();
+    assert.equal(select('#theaterBtn').attributes['aria-pressed'],'false');
     fire(select('#timeline'), 'keydown', {key:'ArrowRight'});
     assert.equal(video.currentTime, 25);
     assert.equal(select('#timeline').attributes['aria-valuenow'], '25');
