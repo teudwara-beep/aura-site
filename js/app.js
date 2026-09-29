@@ -739,7 +739,7 @@ function hydrateThumbs(root = document){
    ============================================================ */
 const views = {
   home: $('#view-home'), watch: $('#view-watch'),
-  cats: $('#view-cats'), photos: $('#view-photos'), library: $('#view-library'),
+  cats: $('#view-cats'), photos: $('#view-photos'), collections: $('#view-collections'), library: $('#view-library'),
   settings: $('#view-settings'), admin: $('#view-admin')
 };
 let watchRequestToken = 0;
@@ -1200,11 +1200,11 @@ async function renderWatch(id){
               </div>
             </div>
             <div class="mobile-extra" id="mobileExtra">
-            <button class="ctl" id="skipBack" aria-label="Back 10s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M11 8L6 12l5 4V8zM18 8l-5 4 5 4V8z" fill="currentColor" stroke="none" opacity=".85"/><path d="M4 12a8 8 0 108-8" stroke-width="1.6"/><path d="M4 8v4h4" stroke-width="1.6"/></svg></button>
-            <button class="ctl" id="skipFwd" aria-label="Forward 10s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8l5 4-5 4V8zM6 8l5 4 5 4V8z" fill="currentColor" stroke="none" opacity=".85"/><path d="M20 12a8 8 0 10-8-8" stroke-width="1.6"/><path d="M20 8v4h-4" stroke-width="1.6"/></svg></button>
-            <button class="ctl" id="pipBtn" aria-label="Picture in picture"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor" stroke="none" opacity=".85"/></svg></button>
-            <button class="ctl" id="miniBtn" aria-label="Mini player"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 12l3 3-3 3"/></svg></button>
-            <button class="ctl" id="theaterBtn" aria-label="Theater"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="1.5"/><rect x="7" y="9" width="10" height="6" rx="1" fill="currentColor" stroke="none" opacity=".85"/></svg></button>
+            <button class="ctl seek-ctl" id="skipBack" type="button" aria-label="Back 10 seconds" title="Back 10 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2.4 7.1M3 4v6h6"/><text x="12" y="15" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
+            <button class="ctl seek-ctl" id="skipFwd" type="button" aria-label="Forward 10 seconds" title="Forward 10 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10a9 9 0 1 0-2.4 7.1M21 4v6h-6"/><text x="12" y="15" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg></button>
+            <button class="ctl" id="pipBtn" type="button" aria-label="Picture in picture" title="Picture in picture"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="2"/><rect x="11" y="11" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg></button>
+            <button class="ctl" id="miniBtn" type="button" aria-label="Open mini player" title="Open mini player"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="2"/><path d="M7 9h10M7 13h3M12 16h7"/></svg></button>
+            <button class="ctl" id="theaterBtn" type="button" aria-label="Theater mode" aria-pressed="false" title="Theater mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 9h19M2.5 15h19"/></svg></button>
             </div>
             <button class="ctl mobile-more" id="moreControlsBtn" type="button" aria-label="More player controls" aria-controls="mobileExtra" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
             <button class="ctl" id="fsBtn" aria-label="Fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -1655,10 +1655,17 @@ function bindPlayer(v){
   listen(document, 'click', e => { if (!e.target.closest('.menu-wrap')) $$('.menu-wrap').forEach(w => w.classList.remove('open')); });
 
   /* Theater */
-  $('#theaterBtn').onclick = () => { const on = layout.classList.toggle('theater'); $('#theaterBtn').classList.toggle('active', on); setTimeout(() => window.dispatchEvent(new Event('resize')), 520); };
+  $('#theaterBtn').onclick = () => { const on = layout.classList.toggle('theater'); $('#theaterBtn').classList.toggle('active', on); $('#theaterBtn').setAttribute('aria-pressed',String(on)); };
 
   /* PiP */
-  $('#pipBtn').onclick = async () => { try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture(); } catch(e){ toast('PiP not supported.', 'warn'); } };
+  const pipBtn = $('#pipBtn');
+  pipBtn.hidden = typeof video.requestPictureInPicture !== 'function' || document.pictureInPictureEnabled === false;
+  pipBtn.onclick = async () => {
+    try {
+      if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+      else await video.requestPictureInPicture();
+    } catch { toast('Picture in picture is unavailable in this browser.', 'warn'); }
+  };
 
   /* Mini player */
   $('#miniBtn').onclick = () => {
@@ -2220,7 +2227,7 @@ async function prepareVideoThumbnail(image){
 }
 let selectedVideoCollectionId = null;
 async function renderAdminVideoCollections(panel){
-  panel.innerHTML = '<div class="admin-panel-head"><h3>Video collections</h3><button class="btn accent sm" id="videoCollectionCreate" type="button">＋ New collection</button></div><div class="storage-result" id="videoCollectionAdminBody" role="status">Loading collections…</div>';
+  panel.innerHTML = '<div class="admin-panel-head"><div><h3>Video collections</h3><p class="photo-description">To show a collection on the public site, add at least one published video and click Publish.</p></div><button class="btn accent sm" id="videoCollectionCreate" type="button">＋ New collection</button></div><div class="storage-result" id="videoCollectionAdminBody" role="status">Loading collections…</div>';
   $('#videoCollectionCreate').onclick = () => editVideoCollectionModal();
   try {
     const {collections} = await api('/api/admin/video-collections');
@@ -2270,7 +2277,8 @@ function editVideoCollectionModal(collection=null){
     try {
       const result = await api(collection ? `/api/admin/video-collections/${collection.id}` : '/api/admin/video-collections',{method:collection?'PATCH':'POST',body:JSON.stringify({title:$('#videoCollectionTitle').value,description:$('#videoCollectionDescription').value})});
       selectedVideoCollectionId = result.collection.id;
-      closeModal(); if (adminTab === 'videoCollections') await renderAdminVideoCollections($('#adminPanel')); toast('Video collection saved.','success');
+      closeModal(); if (adminTab === 'videoCollections') await renderAdminVideoCollections($('#adminPanel'));
+      toast(collection ? 'Video collection saved.' : 'Draft saved. Add a published video, then click Publish to show it on the site.','success');
     } catch(error){ button.disabled = false; toast(error.message,'error'); }
   };
 }
