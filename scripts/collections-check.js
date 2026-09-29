@@ -48,6 +48,26 @@ const end = source.indexOf('function goLibrary(kind)');
 assert.ok(start >= 0 && end > start);
 vm.runInContext(source.slice(start,end), context);
 
+// Exercise the real view registry as well: a mocked show() used to let a
+// collection API test pass even when the collections page was never displayed.
+const routerStart = source.indexOf('const views = {');
+const routerEnd = source.indexOf('function goHome(',routerStart);
+assert.ok(routerStart >= 0 && routerEnd > routerStart);
+const visible = new Map();
+const routerContext = vm.createContext({
+  $:selector => {
+    if (!visible.has(selector)) visible.set(selector,{hidden:true,style:{},offsetWidth:0,pause(){}});
+    return visible.get(selector);
+  },
+  $$:() => [], window:{scrollTo(){}}, closeDrawer(){}, stopTouchPreview(){},
+  disposePlayer(){}, photoRequestToken:0, videoCollectionRequestToken:0,
+  watchRequestToken:0
+});
+vm.runInContext(source.slice(routerStart,routerEnd),routerContext);
+routerContext.show('collections');
+assert.equal(visible.get('#view-collections').hidden,false,'Collection route must display its public view');
+assert.equal(visible.get('#view-home').hidden,true,'Collection route must hide the home view');
+
 async function main() {
   await context.goPhotos();
   assert.match(element('#photosGrid').innerHTML, /2 views/);
@@ -70,6 +90,6 @@ async function main() {
   assert.match(element('#collectionsGrid').innerHTML, /data-id="7"/);
   assert.match(element('#collectionsViews').textContent,/5 collection views/);
   assert.ok(hashes.includes('collection=2') && shown.includes('collections'));
-  console.log('Collection UI checks passed: public lists, detail routes, photo-open counting, and independent collection view calls.');
+  console.log('Collection UI checks passed: visible public route, lists, detail routes, photo-open counting, and independent collection view calls.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
