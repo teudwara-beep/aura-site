@@ -1424,3 +1424,8 @@ html.admin-host .admin-layout{padding-top:32px}
 @media (max-width:360px){
   .controls .time .sep,.controls #durTime{display:none}
 }
+/* Hide NOW PLAYING badge and video title overlay */
+.player-badge,
+.player-title {
+  display: none !important;
+}
